@@ -1,0 +1,144 @@
+---
+title: "The Hobbit text analysis"
+author: "Roshni Katrak-Adefowora"
+date: "2/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidytext)
+library(textdata)
+library(pdftools)
+library(ggwordcloud)
+```
+
+```{r, cache = TRUE}
+hobbit_text <- pdf_text("the-hobbit.pdf") #large file, don't want to do this every time we knit, so add the option to cache it (in the code chunk header)
+
+hobbit_text_p34 <- hobbit_text[34]
+hobbit_text_p34
+```
+
+```{r}
+hobbit_tidy <- data.frame(hobbit_text)
+```
+
+Recognize line breaks, split them up, and unnest them (give own row)
+
+```{r}
+hobbit_tidy <- data.frame(hobbit_text) %>% 
+  mutate(text_full = str_split(hobbit_text, pattern = "\\n")) %>% #first slash is saying just consider the "\n" a character, instead of an operation that R normally recognizes. Also text_full column added - has vector for each individual page, where each element of vector is a line
+  unnest(text_full) %>% #each line has its own line in dataframe
+  mutate(text_full = str_trim(text_full)) #get rid of excess white space
+```
+
+```{r}
+hobbit_df <- hobbit_tidy %>% 
+  slice(-(1:125)) %>% #actual text of hobbit doesn't start until line 126
+  mutate(chapter = case_when(
+    str_detect(text_full, pattern = "Chapter") ~ text_full,
+    TRUE ~ NA_character_ #if anything else true, populate with NA (character class to match existing column class)
+  )) %>% #add new column to group by chapter
+  fill(chapter) %>% #want all NAs to be populated with its chapter
+  separate(col = chapter, into = c("ch", "no"), sep = " ") %>% #separate word "Chapter" from roman numeral
+  mutate(chapter.no = as.numeric(as.roman(no))) #recognize roman numeral and make numeric
+```
+
+Convert to token format (one word per row)
+```{r}
+hobbit_tokens <- hobbit_df %>% 
+  unnest_tokens(word, text_full) %>% #new column word coming from text_full column
+  dplyr::select(-hobbit_text) #remove hobbit_text column
+
+#get word count for each chapter
+hobbit_wordcount <- hobbit_tokens %>% 
+  count(chapter.no, word)
+hobbit_wordcount
+
+#but we want to get rid of the stop words
+```
+### Remove all stop_words that exist in hobbit_tokens
+
+```{r}
+hobbit_nonstop_words <- hobbit_tokens %>% 
+  anti_join(stop_words) #get rid of anything in hobbit_tokens that also shows up in stop_words
+
+nonstop_counts <- hobbit_nonstop_words %>% 
+  count(chapter.no, word)
+nonstop_counts
+```
+Find top 5 words by chapter
+```{r}
+top_5_words <- nonstop_counts %>% 
+  group_by(chapter.no) %>% 
+  arrange(-n) %>% #decreasing order
+  slice(1:5)
+
+ggplot(data = top_5_words, aes(x=word, y=n))+
+  geom_col(fill = "blue")+
+  facet_wrap(~chapter.no, scales = "free")+#scales - don't have to have the same axes
+  coord_flip()
+```
+
+```{r}
+#top 100 words in chapter 1
+ch1_top100 <- nonstop_counts %>% 
+  filter(chapter.no == 1) %>% 
+  arrange(-n) %>% 
+  slice(1:100)
+
+#make word cloud (default shape is oval but that can be changed)
+ch1_cloud <- ggplot(data = ch1_top100, aes(label = word))+
+  geom_text_wordcloud(aes(color = n, size = n))+
+  scale_size_area(max_size = 6) #max text size
+
+ch1_cloud
+```
+
+### Sentiment Analysis
+
+```{r}
+afinn_pos <- get_sentiments("afinn") %>% 
+  filter(value > 2)
+afinn_pos
+
+get_sentiments("bing")
+get_sentiments("nrc") #to view in dataframe, in console say View(get_sentiments("nrc))
+```
+
+
+With `afinn` (ranks words from -5 to +5)
+```{r}
+#assign afinn value to all words in the hobbit that exist in the afinn lexicon
+hobbit_afinn <- hobbit_nonstop_words %>% 
+  inner_join(get_sentiments("afinn")) #only keep words that exist in both dataframes
+
+afinn_counts <- hobbit_afinn %>%
+  count(chapter.no, value)
+
+afinn_means <- hobbit_afinn %>% 
+  group_by(chapter.no) %>% 
+  summarize(mean_afinn = mean(value))
+
+ggplot(data = afinn_means, aes(x=chapter.no, y=mean_afinn))+
+  geom_col() +
+  coord_flip()
+```
+
+### Now use NRC lexicon
+
+```{r}
+hobbit_nrc <- hobbit_nonstop_words %>% 
+  inner_join(get_sentiments("nrc"))
+
+hobbit_nrc_counts <- hobbit_nrc %>% 
+  count(chapter.no, sentiment)
+
+ggplot(data = hobbit_nrc_counts, aes(x=sentiment, y=n))+
+  geom_col()+
+  facet_wrap(~chapter.no)+
+  coord_flip()
+```
+
